@@ -1,0 +1,193 @@
+Import sqlite3
+from kivymd.app import MDApp
+from kivymd.uix.picker import MDDatePicker
+from kivy.uix.screenmanager import ScreenManager, Screen, FadeTransition
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.gridlayout import GridLayout
+from kivy.uix.label import Label
+from kivy.uix.textinput import TextInput
+from kivy.uix.button import Button
+from kivy.uix.scrollview import ScrollView
+from kivy.graphics import Color, Rectangle, RoundedRectangle
+from datetime import datetime
+
+# Database Connection
+conn = sqlite3.connect('spendwise_v24.db')
+c = conn.cursor()
+c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, val TEXT)')
+c.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)')
+c.execute('CREATE TABLE IF NOT EXISTS tx (id INTEGER PRIMARY KEY, user_id INTEGER, date TEXT, cr REAL, db REAL, note TEXT)')
+conn.commit()
+
+class PinScreen(Screen):
+    def on_enter(self):
+        self.clear_widgets()
+        c.execute("SELECT val FROM settings WHERE key='pin'")
+        res = c.fetchone()
+        self.existing_pin = res[0] if res else None
+        
+        main = BoxLayout(orientation='vertical', padding=[40, 80], spacing=30)
+        with main.canvas.before: Color(0, 0.3, 0.15, 1); Rectangle(size=(2000, 2000))
+
+        main.add_widget(Label(text="SpendWise", font_size=90, bold=True, color=(1,1,1,1)))
+        
+        box = BoxLayout(orientation='vertical', padding=30, spacing=20, size_hint=(0.9, None), height=380, pos_hint={'center_x': 0.5})
+        with box.canvas.before: Color(1, 1, 1, 1); RoundedRectangle(size=box.size, pos=box.pos, radius=[40,])
+
+        title = "SET SECURITY PIN" if not self.existing_pin else "ENTER PIN"
+        box.add_widget(Label(text=title, color=(0,0,0,1), font_size=22, bold=True))
+        
+        self.pin_in = TextInput(hint_text="****", password=True, multiline=False, font_size=50, halign='center', size_hint_y=None, height=80)
+        box.add_widget(self.pin_in)
+
+        btn = Button(text="DONE", bold=True, font_size=24, background_color=(0, 0.4, 0.2, 1), size_hint_y=None, height=65)
+        btn.bind(on_press=self.handle_pin); box.add_widget(btn)
+
+        sub_box = BoxLayout(spacing=20, size_hint_y=None, height=40)
+        sub_box.add_widget(Button(text="Forgot PIN", color=(1,1,1,1), background_color=(0,0,0,0), font_size=20))
+        sub_box.add_widget(Button(text="Change PIN", color=(1,1,1,1), background_color=(0,0,0,0), font_size=20))
+        
+        main.add_widget(box); main.add_widget(sub_box); main.add_widget(Label()); self.add_widget(main)
+
+    def handle_pin(self, instance):
+        if not self.existing_pin and len(self.pin_in.text) >= 4:
+            c.execute("INSERT INTO settings VALUES (?,?)", ('pin', self.pin_in.text)); conn.commit()
+            self.manager.current = 'user_list'
+        elif self.pin_in.text == self.existing_pin: self.manager.current = 'user_list'
+        else: self.pin_in.text = ""
+
+class Ledger(Screen):
+    def on_enter(self):
+        self.sel_date = datetime.now().strftime("%d-%m-%Y")
+        self.refresh()
+
+    def refresh(self):
+        self.clear_widgets()
+        uid = self.manager.active_uid
+        c.execute("SELECT name FROM users WHERE id=?", (uid,))
+        u_name = c.fetchone()[0]
+
+        # Calculation for Predictions & Totals
+        c.execute("SELECT SUM(cr), SUM(db), AVG(db) FROM tx WHERE user_id=?", (uid,))
+        res = c.fetchone()
+        t_cr, t_db = (res[0] or 0), (res[1] or 0)
+        balance = t_cr - t_db
+        m_pred = (res[2] or 0) * 30 
+        y_pred = (res[2] or 0) * 365
+
+        main = BoxLayout(orientation='vertical')
+        with main.canvas.before: Color(1,1,1,1); Rectangle(size=(2000,2000))
+
+        # White/Green Header
+        h = BoxLayout(size_hint_y=None, height=80, padding=10)
+        with h.canvas.before: Color(0, 0.4, 0.1, 1); Rectangle(size=(2000, 80))
+        h.add_widget(Label(text=f"SpendWise: {u_name.upper()}", bold=True, font_size=22))
+        h.add_widget(Button(text="SHARE PDF", size_hint_x=0.35, background_color=(0,0,0,0), color=(0,0,0), bold=True))
+        main.add_widget(h)
+
+        # PREDICTION DASHBOARD (Font 18-24)
+        dash = GridLayout(cols=2, size_hint_y=None, height=140, padding=15, spacing=5)
+        with dash.canvas.before: Color(0.95, 0.98, 0.95, 1); Rectangle(size=(2000, 140))
+        dash.add_widget(Label(text=f"BAL: ₹{balance}", bold=True, color=(0,0.5,0,1), font_size=26))
+        dash.add_widget(Label(text=f"MON PRED: ₹{int(m_pred)}", font_size=26, color=(0,0.5,0,1)))
+        dash.add_widget(Label(text=f"YEAR PRED: ₹{int(y_pred)}", font_size=26, color=(0,0.5,0,1)))
+        main.add_widget(dash)
+
+        # Transaction Input
+        inp = BoxLayout(orientation='vertical', size_hint_y=None, height=190, padding=10, spacing=8)
+        self.c_btn = Button(text=f"CALENDAR: {self.sel_date}", size_hint_y=None, height=45, background_color=(0,0,0,1), bold=True)
+        self.c_btn.bind(on_press=self.open_cal); inp.add_widget(self.c_btn)
+        
+        r1 = BoxLayout(spacing=10, size_hint_y=None, height=55)
+        self.amt = TextInput(hint_text="Amount", font_size=24, multiline=False); self.note = TextInput(hint_text="Note", font_size=24, multiline=False)
+        r1.add_widget(self.amt); r1.add_widget(self.note); inp.add_widget(r1)
+        
+        r2 = BoxLayout(spacing=10, size_hint_y=None, height=55)
+        r2.add_widget(Button(text="CREDIT (+)", background_color=(0,0.4,0,1), bold=True, on_press=lambda x: self.save(self.amt.text, 0)))
+        r2.add_widget(Button(text="DEBIT (-)", background_color=(0.6,0,0,1), bold=True, on_press=lambda x: self.save(0, self.amt.text)))
+        inp.add_widget(r2); main.add_widget(inp)
+
+        # TABLE TITLES (Font 16)
+        titles = BoxLayout(size_hint_y=None, height=45, padding=[10, 0])
+        with titles.canvas.before: Color(0,0,0,1); Rectangle(size=(2000, 45))
+        for t, s in [("DATE", 0.25), ("CB", 0.15), ("DB", 0.15), ("NOTE", 0.3), ("EDIT", 0.15)]:
+            titles.add_widget(Label(text=t, font_size=16, bold=True, size_hint_x=s))
+        main.add_widget(titles)
+
+        # ROWS (Font 14)
+        s = ScrollView()
+        g = GridLayout(cols=1, spacing=5, size_hint_y=None, padding=5); g.bind(minimum_height=g.setter('height'))
+        c.execute("SELECT * FROM tx WHERE user_id=? ORDER BY id DESC", (uid,))
+        for r in c.fetchall():
+            row = BoxLayout(size_hint_y=None, height=60, padding=5)
+            with row.canvas.before: Color(0.98, 0.98, 0.98, 1); Rectangle(size=row.size, pos=row.pos)
+            row.add_widget(Label(text=str(r[2]), color=(0.4,0.4,0.4,1), font_size=14, size_hint_x=0.25))
+            row.add_widget(Label(text=str(r[3]), color=(0,0.5,0,1), font_size=16, size_hint_x=0.15, bold=True))
+            row.add_widget(Label(text=str(r[4]), color=(0.8,0,0,1), font_size=16, size_hint_x=0.15, bold=True))
+            row.add_widget(Label(text=str(r[5]).upper(), color=(0,0,0,1), font_size=16, size_hint_x=0.3))
+            eb = Button(text="EDIT", font_size=10, background_color=(0,0.3,0.6,1), size_hint_x=0.15)
+            eb.bind(on_press=lambda x, row=r: self.edit_tx(row)); row.add_widget(eb)
+            g.add_widget(row)
+        s.add_widget(g); main.add_widget(s)
+
+        # BOTTOM TOTALS (Red/Green Color Code)
+        bot = BoxLayout(size_hint_y=None, height=60, padding=10)
+        with bot.canvas.before: Color(0.1, 0.1, 0.1, 1); Rectangle(size=(2000, 60))
+        bot.add_widget(Label(text=f"TOT CR: ₹{t_cr}", color=(0,1,0,1), bold=True, font_size=30))
+        bot.add_widget(Label(text=f"TOT DB: ₹{t_db}", color=(1,0,0,1), bold=True, font_size=30))
+        main.add_widget(bot); self.add_widget(main)
+
+    def open_cal(self, i):
+        d = MDDatePicker(); d.bind(on_save=lambda x,v,r: self.set_dt(v)); d.open()
+    def set_dt(self, v): self.sel_date = v.strftime("%d-%m-%Y"); self.refresh()
+    def save(self, cr, db):
+        if self.amt.text:
+            c.execute("INSERT INTO tx (user_id, date, cr, db, note) VALUES (?,?,?,?,?)", (self.manager.active_uid, self.sel_date, cr, db, self.note.text))
+            conn.commit(); self.refresh()
+    def edit_tx(self, r):
+        self.amt.text = str(r[3] if r[3]>0 else r[4]); self.note.text = r[5]
+        c.execute("DELETE FROM tx WHERE id=?", (r[0],)); conn.commit(); self.refresh()
+
+class UserList(Screen):
+    def on_enter(self):
+        self.clear_widgets()
+        l = BoxLayout(orientation='vertical', padding=30, spacing=20)
+        with l.canvas.before: Color(1, 1, 1, 0); Rectangle(size=(2000, 2000))
+        l.add_widget(Label(text="SpendWise", font_size=60, bold=True, color=(0,0.4,0,1), size_hint_y=None, height=85))
+        s = ScrollView()
+        g = GridLayout(cols=1, spacing=15, size_hint_y=None); g.bind(minimum_height=g.setter('height'))
+        c.execute("SELECT * FROM users")
+        for u in c.fetchall():
+            b = Button(text=f"ACCOUNT: {u[1].upper()}", size_hint_y=None, height=100, background_normal='', background_color=(0,0.4,0.1,1), color=(1,1,1,1), bold=True, font_size=20)
+            b.bind(on_press=lambda x, uid=u[0]: self.go(uid)); g.add_widget(b)
+        s.add_widget(g); l.add_widget(s)
+        act = BoxLayout(size_hint_y=None, height=140, orientation='vertical', spacing=10)
+        act.add_widget(Button(text="+ ADD NEW USER", background_color=(0, 0.4, 0.8, 1), bold=True, on_press=lambda x: setattr(self.manager, 'current', 'user_edit')))
+        br = BoxLayout(spacing=10); br.add_widget(Button(text="BACKUP", background_color=(0.1, 0.6, 0.2, 1), bold=True))
+        br.add_widget(Button(text="RESTORE", background_color=(0.8, 0.4, 0, 1), bold=True))
+        act.add_widget(br); l.add_widget(act); self.add_widget(l)
+    def go(self, uid): self.manager.active_uid = uid; self.manager.current = 'ledger'
+
+class UserEdit(Screen):
+    def on_enter(self):
+        self.clear_widgets(); l = BoxLayout(orientation='vertical', padding=50)
+        with l.canvas.before: Color(0, 0.3, 0.15, 1); Rectangle(size=(2000, 2000))
+        box = BoxLayout(orientation='vertical', padding=30, spacing=25, size_hint=(1, None), height=280, pos_hint={'center_y': 0.5})
+        with box.canvas.before: Color(1,1,1,1); RoundedRectangle(size=box.size, pos=box.pos, radius=[30,])
+        box.add_widget(Label(text="NEW USERNAME", color=(0,0,0,1), bold=True, font_size=22))
+        self.n = TextInput(hint_text="Type name...", size_hint_y=None, height=65, font_size=22, halign='center', multiline=False)
+        sv = Button(text="SAVE ACCOUNT", background_color=(0, 0.4, 0.1, 1), bold=True, font_size=20)
+        sv.bind(on_press=self.save); box.add_widget(self.n); box.add_widget(sv)
+        l.add_widget(Label()); l.add_widget(box); l.add_widget(Label()); self.add_widget(l)
+    def save(self, i):
+        if self.n.text: c.execute("INSERT INTO users (name) VALUES (?)", (self.n.text,)); conn.commit()
+        self.manager.current = 'user_list'
+
+class SpendWiseApp(MDApp):
+    def build(self):
+        sm = ScreenManager(transition=FadeTransition()); sm.active_uid = None
+        for s in [PinScreen(name='pin'), UserList(name='user_list'), UserEdit(name='user_edit'), Ledger(name='ledger')]: sm.add_widget(s)
+        return sm
+
+if __name__ == '__main__': SpendWiseApp().run()
+Indha code ah yae add pannikiran mapla
