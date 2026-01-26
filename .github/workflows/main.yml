@@ -1,4 +1,4 @@
-Name: Build SpendWise APK v1
+name: Build SpendWise APK v1
 on: [push]
 
 jobs:
